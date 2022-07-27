@@ -43,11 +43,17 @@ fn hasDotGit?(dir) {
 // order of "when I last worked on them". This isn't something I can measure
 // directly without checking the mtime of every file in the repo. But I use the
 // mtime of `.git/index`, which changes when branches are switched or new
-// commits are made, as a "reasonably good" proxy.
+// commits are made, as a "reasonably good" proxy. If `.git/index` does not
+// exist (e.g. for newly initialized repos), we fall back to `.git/HEAD` which
+// always exists.
 fn gitModTime(dir, pass) {
-	gitHeadPath := path.join(dir, '.git/index')
-	with fs.statFile(gitHeadPath) fn(fileStat) {
-		pass(fileStat.mod)
+	gitIndexPath := path.join(dir, '.git/index')
+	gitHeadPath := path.join(dir, '.git/HEAD')
+	with fs.statFile(gitIndexPath) fn(fileStat) if fileStat {
+		? -> with fs.statFile(gitHeadPath) fn(fileStat) {
+			pass(fileStat.mod)
+		}
+		_ -> pass(fileStat.mod)
 	}
 }
 
@@ -104,76 +110,85 @@ fn main(rootDir, options) {
 		// There are 4 * # of projects tasks to wait on, and when all of them
 		// have been completed, we proceed to the next step in `fn maybeRest`.
 		waits := 4 * len(gitProjects)
-		fn maybeRest {
-			waits <- waits - 1
-
-			if waits = 0 -> {
-				// print git repos
-				projNames := gitProjects |> map(:name)
-				maxProjNameLen := math.max(projNames |> map(len)...)
-				projNameLenPad := padStart('', maxProjNameLen, ' ')
-				branches := gitProjects |> map(:branch)
-				maxBranchLen := math.max(branches |> map(len)...)
-				gitProjects |> sort.sort(:mtime) |> reverse() |> with each() fn(proj) {
-					fmt.printf(
-						if options.color {
-							true -> '{{0}} {{1}} {{2}}'
-							_ -> '{{0}} {{3}} {{1}} {{4}} {{2}}'
-						}
-						// always-used arguments
-						padStart(proj.name, maxProjNameLen, ' ') |> if proj.diff {
-							'' -> bold
-							_ -> boldyellow
-						}()
-						padStart(proj.branch, maxBranchLen, ' ') |> if proj.synced? {
-							true -> id
-							_ -> red
-						}()
-						datetime.format(proj.mtime) |> gray()
-						// no-color-only arguments
-						if proj.diff {
-							'' -> ' '
-							_ -> '*'
-						}
-						if proj.synced? {
-							true -> ' '
-							_ -> '!'
-						}
-					)
-					if options.files & proj.diff != '' -> {
-						proj.diff |>
-							split('\n') |>
-							filter(fn(line) line != '') |>
-							map(fn(line) projNameLenPad + ' ' + line) |>
-							join('\n') |>
-							println()
+		fn maybeRest() if waits = 0 -> {
+			// print git repos
+			projNames := gitProjects |> map(:name)
+			maxProjNameLen := math.max(0, projNames |> map(len)...)
+			projNameLenPad := padStart('', maxProjNameLen, ' ')
+			branches := gitProjects |> map(:branch)
+			maxBranchLen := math.max(0, branches |> map(len)...)
+			gitProjects |> sort.sort(:mtime) |> reverse() |> with each() fn(proj) {
+				fmt.printf(
+					if options.color {
+						true -> '{{0}} {{1}} {{2}}'
+						_ -> '{{0}} {{3}} {{1}} {{4}} {{2}}'
 					}
+					// always-used arguments
+					padStart(proj.name, maxProjNameLen, ' ') |> if proj.diff {
+						'' -> bold
+						_ -> boldyellow
+					}()
+					padStart(proj.branch, maxBranchLen, ' ') |> if proj.synced? {
+						true -> id
+						_ -> red
+					}()
+					datetime.format(proj.mtime) |> gray()
+					// no-color-only arguments
+					if proj.diff {
+						'' -> ' '
+						_ -> '*'
+					}
+					if proj.synced? {
+						true -> ' '
+						_ -> '!'
+					}
+				)
+				if options.files & proj.diff != '' -> {
+					proj.diff |>
+						split('\n') |>
+						filter(fn(line) line != '') |>
+						map(fn(line) projNameLenPad + ' ' + line) |>
+						join('\n') |>
+						println()
 				}
+			}
 
-				// print untracked projects
+			// print untracked projects
+			if untrackedProjects != [] -> {
 				println('Excluded (non-git) dirs:'
 					untrackedProjects |> map(:name) |> sort.sort() |> join(', '))
 			}
 		}
 
-		gitProjects |> with each() fn(proj) {
-			with gitModTime(proj.dir) fn(mtime) {
-				proj.mtime := mtime
-				maybeRest()
-			}
-			with gitBranch(proj.dir) fn(branch) {
-				proj.branch := branch
-				maybeRest()
-			}
-			with gitAllCommitsPushed(proj.dir) fn(synced?) {
-				proj.synced? := synced?
-				maybeRest()
-			}
-			with gitStatus(proj.dir) fn(diff) {
-				proj.diff := diff
-				maybeRest()
+		// we check for wait group completion before dispatching any tasks,
+		// because if a directory does not contain any git repos, this is the
+		// only time to check the wait group.
+		if gitProjects {
+			[] -> maybeRest()
+			_ -> gitProjects |> with each() fn(proj) {
+				with gitModTime(proj.dir) fn(mtime) {
+					proj.mtime := mtime
+					waits <- waits - 1
+					maybeRest()
+				}
+				with gitBranch(proj.dir) fn(branch) {
+					proj.branch := branch
+					waits <- waits - 1
+					maybeRest()
+				}
+				with gitAllCommitsPushed(proj.dir) fn(synced?) {
+					proj.synced? := synced?
+					waits <- waits - 1
+					maybeRest()
+				}
+				with gitStatus(proj.dir) fn(diff) {
+					proj.diff := diff
+					waits <- waits - 1
+					maybeRest()
+				}
 			}
 		}
+
 	}
 }
 
