@@ -213,13 +213,13 @@ Options
 	--[h]elp      Show this help message
 	--[v]ersion   Print version information and exit
 	--no-[c]olor  Use letters instead of colors to indicate info
-	--no-[f]iles  Do not list unstaged file changes
+	--no-[f]iles  Do not list non-committed file changes
 
 Legend
 	[repo-name] [branch] [last-worked-on-timestamp]
-	            [uncommitted-changes]
+	            [non-committed-changes]
 
-	- repo-name is yellow (or followed by "*") if there are uncommitted
+	- repo-name is yellow (or followed by "*") if there are non-committed
 	  changes.
 	- branch is red (or followed by "!") if there are unsynced changes (if
 	  local is ahead of remote).
