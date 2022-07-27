@@ -38,33 +38,35 @@ fn hasDotGit?(dir) {
 	fs.statFile(gitHeadPath) != ?
 }
 
-fn gitModTime(dir) {
+fn gitModTime(dir, pass) {
 	gitHeadPath := path.join(dir, '.git/index')
-	fs.statFile(gitHeadPath).mod
+	with fs.statFile(gitHeadPath) fn(fileStat) {
+		pass(fileStat.mod)
+	}
 }
 
-fn gitBranch(dir) {
-	exec(
+fn gitBranch(dir, pass) {
+	with exec(
 		'sh'
 		['-c', fmt.format('cd {{0}} && git symbolic-ref --short HEAD', dir)]
 		''
-	).stdout |> trim()
+	) fn(evt) pass(evt.stdout |> trim())
 }
 
-fn gitAllCommitsPushed(dir) {
-	exec(
+fn gitAllCommitsPushed(dir, pass) {
+	with exec(
 		'sh'
 		['-c', fmt.format('cd {{0}} && git merge-base --is-ancestor HEAD @{u}', dir)]
 		''
-	).status = 0
+	) fn(evt) pass(evt.status = 0)
 }
 
-fn gitStatus(dir) {
-	exec(
+fn gitStatus(dir, pass) {
+	with exec(
 		'sh'
 		['-c', fmt.format('cd {{0}} && git status --porcelain --short', dir)]
 		''
-	).stdout
+	) fn(evt) pass(evt.stdout)
 }
 
 fn main(rootDir, options) {
@@ -80,60 +82,84 @@ fn main(rootDir, options) {
 
 		gitProjects := gitDirs |> with map() fn(dir) {
 			name: path.split(dir) |> last()
-			mtime: gitModTime(dir)
-			branch: gitBranch(dir)
-			synced?: gitAllCommitsPushed(dir)
-			diff: gitStatus(dir)
+			dir: dir
 		}
 		untrackedProjects := untrackedDirs |> with map() fn(dir) {
 			name: path.split(dir) |> last()
 		}
 
-		// print git repos
-		projNames := gitProjects |> map(:name)
-		maxProjNameLen := math.max(projNames |> map(len)...)
-		projNameLenPad := padStart('', maxProjNameLen, ' ')
-		branches := gitProjects |> map(:branch)
-		maxBranchLen := math.max(branches |> map(len)...)
-		gitProjects |> sort.sort(:mtime) |> reverse() |> with each() fn(proj) {
-			fmt.printf(
-				if options.color {
-					true -> '{{0}} {{1}} {{2}}'
-					_ -> '{{0}} {{3}} {{1}} {{4}} {{2}}'
+		// TODO: explain
+		waits := 4 * len(gitProjects)
+		fn maybeRest {
+			waits <- waits - 1
+
+			if waits = 0 -> {
+				// print git repos
+				projNames := gitProjects |> map(:name)
+				maxProjNameLen := math.max(projNames |> map(len)...)
+				projNameLenPad := padStart('', maxProjNameLen, ' ')
+				branches := gitProjects |> map(:branch)
+				maxBranchLen := math.max(branches |> map(len)...)
+				gitProjects |> sort.sort(:mtime) |> reverse() |> with each() fn(proj) {
+					fmt.printf(
+						if options.color {
+							true -> '{{0}} {{1}} {{2}}'
+							_ -> '{{0}} {{3}} {{1}} {{4}} {{2}}'
+						}
+						// always arguments
+						padStart(proj.name, maxProjNameLen, ' ') |> if proj.diff {
+							'' -> bold
+							_ -> boldyellow
+						}()
+						padStart(proj.branch, maxBranchLen, ' ') |> if proj.synced? {
+							true -> id
+							_ -> red
+						}()
+						datetime.format(proj.mtime) |> gray()
+						// no-color arguments
+						if proj.diff {
+							'' -> ' '
+							_ -> '*'
+						}
+						if proj.synced? {
+							true -> ' '
+							_ -> '!'
+						}
+					)
+					if options.files & proj.diff != '' -> {
+						proj.diff |>
+							split('\n') |>
+							filter(fn(line) line != '') |>
+							map(fn(line) projNameLenPad + ' ' + line) |>
+							join('\n') |>
+							println()
+					}
 				}
-				// always arguments
-				padStart(proj.name, maxProjNameLen, ' ') |> if proj.diff {
-					'' -> bold
-					_ -> boldyellow
-				}()
-				padStart(proj.branch, maxBranchLen, ' ') |> if proj.synced? {
-					true -> id
-					_ -> red
-				}()
-				datetime.format(proj.mtime) |> gray()
-				// no-color arguments
-				if proj.diff {
-					'' -> ' '
-					_ -> '*'
-				}
-				if proj.synced? {
-					true -> ' '
-					_ -> '!'
-				}
-			)
-			if options.files & proj.diff != '' -> {
-				proj.diff |>
-					split('\n') |>
-					filter(fn(line) line != '') |>
-					map(fn(line) projNameLenPad + ' ' + line) |>
-					join('\n') |>
-					println()
+
+				// print untracked projects
+				println('Excluded (non-git) dirs:'
+					untrackedProjects |> map(:name) |> sort.sort() |> join(', '))
 			}
 		}
 
-		// print untracked projects
-		println('Excluded (non-git) dirs:'
-			untrackedProjects |> map(:name) |> sort.sort() |> join(', '))
+		gitProjects |> with each() fn(proj) {
+			with gitModTime(proj.dir) fn(mtime) {
+				proj.mtime := mtime
+				maybeRest()
+			}
+			with gitBranch(proj.dir) fn(branch) {
+				proj.branch := branch
+				maybeRest()
+			}
+			with gitAllCommitsPushed(proj.dir) fn(synced?) {
+				proj.synced? := synced?
+				maybeRest()
+			}
+			with gitStatus(proj.dir) fn(diff) {
+				proj.diff := diff
+				maybeRest()
+			}
+		}
 	}
 }
 
