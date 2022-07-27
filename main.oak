@@ -33,11 +33,17 @@ fn boldyellow(s) '\x1b[1;33m' << s << '\x1b[0;0m'
 fn red(s) '\x1b[0;31m' << s << '\x1b[0;0m'
 fn gray(s) '\x1b[0;90m' << s << '\x1b[0;0m'
 
+// We use the existence of ".git" as sign that we're in a git repo.
 fn hasDotGit?(dir) {
-	gitHeadPath := path.join(dir, '.git/HEAD')
+	gitHeadPath := path.join(dir, '.git')
 	fs.statFile(gitHeadPath) != ?
 }
 
+// I want to sort the list of git repositories by a rough reverse-chronological
+// order of "when I last worked on them". This isn't something I can measure
+// directly without checking the mtime of every file in the repo. But I use the
+// mtime of `.git/index`, which changes when branches are switched or new
+// commits are made, as a "reasonably good" proxy.
 fn gitModTime(dir, pass) {
 	gitHeadPath := path.join(dir, '.git/index')
 	with fs.statFile(gitHeadPath) fn(fileStat) {
@@ -53,6 +59,8 @@ fn gitBranch(dir, pass) {
 	) fn(evt) pass(evt.stdout |> trim())
 }
 
+// To check whether local is ahead of remote, we check whether head of local is
+// an ancestor of (or the same as) the head of remote.
 fn gitAllCommitsPushed(dir, pass) {
 	with exec(
 		'sh'
@@ -88,7 +96,13 @@ fn main(rootDir, options) {
 			name: path.split(dir) |> last()
 		}
 
-		// TODO: explain
+		// Each check for git metadata spawns a few OS processes. Doing that
+		// sequentially for many git repos is inefficient. So instead, we
+		// parallelize the spawning of all the processes in a wait group (we
+		// spawn all of them, and wait for all of them to complete).
+		//
+		// There are 4 * # of projects tasks to wait on, and when all of them
+		// have been completed, we proceed to the next step in `fn maybeRest`.
 		waits := 4 * len(gitProjects)
 		fn maybeRest {
 			waits <- waits - 1
@@ -106,7 +120,7 @@ fn main(rootDir, options) {
 							true -> '{{0}} {{1}} {{2}}'
 							_ -> '{{0}} {{3}} {{1}} {{4}} {{2}}'
 						}
-						// always arguments
+						// always-used arguments
 						padStart(proj.name, maxProjNameLen, ' ') |> if proj.diff {
 							'' -> bold
 							_ -> boldyellow
@@ -116,7 +130,7 @@ fn main(rootDir, options) {
 							_ -> red
 						}()
 						datetime.format(proj.mtime) |> gray()
-						// no-color arguments
+						// no-color-only arguments
 						if proj.diff {
 							'' -> ' '
 							_ -> '*'
@@ -163,6 +177,7 @@ fn main(rootDir, options) {
 	}
 }
 
+// Fix cli.parseArgv() for running as a standalone binary
 Cli := with cli.parseArgv() if {
 	args().1 |> default('') |> endsWith?('main.oak') -> args()
 	_ -> ['oak', 'superstat.oak'] |> append(args() |> slice(1))
@@ -186,13 +201,15 @@ Options
 	--no-[f]iles  Do not list unstaged file changes
 
 Legend
-	[repo-name] [branch] [last-modified-timestamp]
+	[repo-name] [branch] [last-worked-on-timestamp]
 	            [uncommitted-changes]
 
 	- repo-name is yellow (or followed by "*") if there are uncommitted
 	  changes.
 	- branch is red (or followed by "!") if there are unsynced changes (if
 	  local is ahead of remote).
+	- If no rootDir is provided, Superstat falls back to $SUPERSTAT_ROOT
+	  if defined in the environment.
 ')
 	exit(0)
 }
