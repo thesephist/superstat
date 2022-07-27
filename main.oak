@@ -1,0 +1,183 @@
+{
+	println: println
+	default: default
+	identity: id
+	map: map
+	each: each
+	last: last
+	slice: slice
+	filter: filter
+	append: append
+	reverse: reverse
+	separate: separate
+} := import('std')
+{
+	join: join
+	split: split
+	padStart: padStart
+	endsWith?: endsWith?
+	trim: trim
+} := import('str')
+fmt := import('fmt')
+math := import('math')
+sort := import('sort')
+fs := import('fs')
+path := import('path')
+datetime := import('datetime')
+cli := import('cli')
+
+Version := '1.0'
+
+fn bold(s) '\x1b[1m' << s << '\x1b[0m'
+fn boldyellow(s) '\x1b[1;33m' << s << '\x1b[0;0m'
+fn red(s) '\x1b[0;31m' << s << '\x1b[0;0m'
+fn gray(s) '\x1b[0;90m' << s << '\x1b[0;0m'
+
+fn hasDotGit?(dir) {
+	gitHeadPath := path.join(dir, '.git/HEAD')
+	fs.statFile(gitHeadPath) != ?
+}
+
+fn gitModTime(dir) {
+	gitHeadPath := path.join(dir, '.git/index')
+	fs.statFile(gitHeadPath).mod
+}
+
+fn gitBranch(dir) {
+	exec(
+		'sh'
+		['-c', fmt.format('cd {{0}} && git symbolic-ref --short HEAD', dir)]
+		''
+	).stdout |> trim()
+}
+
+fn gitAllCommitsPushed(dir) {
+	exec(
+		'sh'
+		['-c', fmt.format('cd {{0}} && git merge-base --is-ancestor HEAD @{u}', dir)]
+		''
+	).status = 0
+}
+
+fn gitStatus(dir) {
+	exec(
+		'sh'
+		['-c', fmt.format('cd {{0}} && git status --porcelain --short', dir)]
+		''
+	).stdout
+}
+
+fn main(rootDir, options) {
+	if !options.color -> {
+		bold <- boldyellow <- red <- gray <- id
+	}
+
+	with fs.listFiles(rootDir) fn(files) {
+		[gitDirs, untrackedDirs] := files |>
+			filter(:dir) |>
+			map(fn(f) path.join(rootDir, f.name)) |>
+			separate(hasDotGit?)
+
+		gitProjects := gitDirs |> with map() fn(dir) {
+			name: path.split(dir) |> last()
+			mtime: gitModTime(dir)
+			branch: gitBranch(dir)
+			synced?: gitAllCommitsPushed(dir)
+			diff: gitStatus(dir)
+		}
+		untrackedProjects := untrackedDirs |> with map() fn(dir) {
+			name: path.split(dir) |> last()
+		}
+
+		// print git repos
+		projNames := gitProjects |> map(:name)
+		maxProjNameLen := math.max(projNames |> map(len)...)
+		projNameLenPad := padStart('', maxProjNameLen, ' ')
+		branches := gitProjects |> map(:branch)
+		maxBranchLen := math.max(branches |> map(len)...)
+		gitProjects |> sort.sort(:mtime) |> reverse() |> with each() fn(proj) {
+			fmt.printf(
+				if options.color {
+					true -> '{{0}} {{1}} {{2}}'
+					_ -> '{{0}} {{3}} {{1}} {{4}} {{2}}'
+				}
+				// always arguments
+				padStart(proj.name, maxProjNameLen, ' ') |> if proj.diff {
+					'' -> bold
+					_ -> boldyellow
+				}()
+				padStart(proj.branch, maxBranchLen, ' ') |> if proj.synced? {
+					true -> id
+					_ -> red
+				}()
+				datetime.format(proj.mtime) |> gray()
+				// no-color arguments
+				if proj.diff {
+					'' -> ' '
+					_ -> '*'
+				}
+				if proj.synced? {
+					true -> ' '
+					_ -> '!'
+				}
+			)
+			if options.files & proj.diff != '' -> {
+				proj.diff |>
+					split('\n') |>
+					filter(fn(line) line != '') |>
+					map(fn(line) projNameLenPad + ' ' + line) |>
+					join('\n') |>
+					println()
+			}
+		}
+
+		// print untracked projects
+		println('Excluded (non-git) dirs:'
+			untrackedProjects |> map(:name) |> sort.sort() |> join(', '))
+	}
+}
+
+Cli := with cli.parseArgv() if {
+	args().1 |> default('') |> endsWith?('main.oak') -> args()
+	_ -> ['oak', 'superstat.oak'] |> append(args() |> slice(1))
+}
+
+if Cli.opts.version != ? | Cli.opts.v != ? -> {
+	fmt.printf('Superstat v{{0}}', Version)
+	exit(0)
+}
+
+if Cli.opts.help != ? | Cli.opts.h != ? -> {
+	println('Superstat: git status + diff every repo in a workspace.
+
+Usage
+	superstat [rootDir] [options]
+
+Options
+	--[h]elp      Show this help message
+	--[v]ersion   Print version information and exit
+	--no-[c]olor  Use letters instead of colors to indicate info
+	--no-[f]iles  Do not list unstaged file changes
+
+Legend
+	[repo-name] [branch] [last-modified-timestamp]
+	            [uncommitted-changes]
+
+	- repo-name is yellow (or followed by "*") if there are uncommitted
+	  changes.
+	- branch is red (or followed by "!") if there are unsynced changes (if
+	  local is ahead of remote).
+')
+	exit(0)
+}
+
+rootDir := Cli.verb |> default(env().SUPERSTAT_ROOT)
+if rootDir = ? -> {
+	println('No root directory of git repositories provided.')
+	exit(1)
+}
+main(path.resolve(rootDir), {
+	color: Cli.opts.'no-color' = ? & Cli.opts.c = ?
+	files: Cli.opts.'no-files' = ? & Cli.opts.f = ?
+})
+
