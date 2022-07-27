@@ -234,6 +234,10 @@ if rootDir = ? -> {
 	println('No root directory of git repositories provided.')
 	exit(1)
 }
+if fs.statFile(rootDir) = ? -> {
+	fmt.printf('Could not read "{{0}}".', rootDir)
+	exit(1)
+}
 main(path.resolve(rootDir), {
 	color: Cli.opts.'no-color' = ? & Cli.opts.c = ?
 	files: Cli.opts.'no-files' = ? & Cli.opts.f = ?
