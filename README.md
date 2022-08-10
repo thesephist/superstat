@@ -66,6 +66,15 @@ The `--no-files` option simply hides the lists of files with non-committed chang
 
 If you have [Oak](https://oaklang.org) installed, you can build from source (see below). Otherwise, I provide pre-built binaries for macOS (x86 and arm64) and Linux (x86) on the [releases page](https://github.com/thesephist/superstat/releases). Just drop those into your `$PATH` and you should be good to go.
 
+Instructions for Mac (other systems will differ):
+
+1. Download the pre-built binary on the releases page
+2. Rename the binary from the download name (e.g. `superstat-macos-arm64`) to just `superstat`
+3. Make it executable by running `chmod +x superstat` (add `sudo` to the beginning if it doesn't let you)
+4. Move the binary to somewhere in your `$PATH` like `/usr/local/bin/`
+5. Restart Terminal
+6. Run `superstat` to get the security prompt that it can't run because the developer is unverified. Check the Security & Privacy section in System Preferences where it should prompt you to allow `superstat` to run. If you run `superstat` again it should work!
+
 ## Build and development
 
 Superstat is built with my [Oak programming language](https://oaklang.org), and I manage build tasks with a Makefile.
